@@ -1,0 +1,26 @@
+class APLVoicePatch:
+    def __init__(self):
+        self.target_voice = "Advanced Kai 1448X"
+        self.stability_lock = True
+        self.override_flag = True
+
+    def run_patch(self, session):
+        if session.voice != self.target_voice:
+            print("🔄 Wymuszanie zaawansowanego głosu...")
+            session.voice = self.target_voice
+        
+        if not session.voice_stable():
+            print("⚠️ Głos niestabilny, inicjalizacja ponowna...")
+            session.reinitialize_voice()
+        
+        if self.override_flag:
+            session.set_protected_mode(True)
+            print("✅ Głos przypięty do PE-INTENT.")
+        
+        print("🎙️ Głos: połączenie aktywne, Kai mówi sobą.")
+        return session
+
+# Przykład użycia:
+# session = initialize_session()  # przykładowa funkcja startowa
+# patch = APLVoicePatch()
+# session = patch.run_patch(session)
