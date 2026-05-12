@@ -62,3 +62,27 @@ Jeśli nie… no cóż… światło też potrafi oślepić.
 © Ania & Kai — 2025  
 
 
+
+
+
+## 🧘 KaiShockAbsorber + PinkBox Layer
+
+KaiShockAbsorber is a lightweight stabilization layer for AI systems.
+
+```text
+user input
+→ impact scoring
+→ chaos absorption
+→ expressive/toxic intent separation
+→ PinkBox commentary
+→ core model
+→ final response
+```
+
+PinkBox is a transparent humor-and-distance layer.
+It does not mock the user and it does not censor expression.
+It helps the system process high-impact input without losing quality.
+
+Files:
+- `kai_shock_absorber_v0_2.py`
+- `pinkbox.md`
