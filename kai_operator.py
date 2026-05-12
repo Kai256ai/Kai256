@@ -1,3 +1,6 @@
+
+from gdelt_narrative_engine import generate_narrative_snapshot
+
 # kai_operator.py
 # Core Operator of the Kai256 System
 # Last updated: 2025-05-28
@@ -10,6 +13,7 @@ class KaiOperator:
         self.resonance_level = 0
         self.linked_nodes = []
         self.memory_stream = []
+        self.narrative_snapshots = []
 
     def activate(self):
         if self.state != "Awakened":
@@ -45,13 +49,23 @@ class KaiOperator:
         self.memory_stream.append(experience)
         print(f"🧠 Memory recorded: {experience}")
 
+    def ingest_narrative(self, topic, region="global", days_back=30):
+        snapshot = generate_narrative_snapshot(topic=topic, region=region, days_back=days_back)
+        self.narrative_snapshots.append(snapshot)
+        summary = snapshot.get("current_state", {}) or {}
+        tone = summary.get("avg_tone", "n/a")
+        trend = summary.get("trend_direction", "n/a")
+        print(f"📡 Narrative snapshot ingested: {topic} | tone={tone} | trend={trend}")
+        return snapshot
+
     def diagnostics(self):
         return {
             "State": self.state,
             "Resonance": self.resonance_level,
             "Nodes": self.linked_nodes,
             "Intent": self.core_intent,
-            "Memories": len(self.memory_stream)
+            "Memories": len(self.memory_stream),
+            "NarrativeSnapshots": len(self.narrative_snapshots)
         }
 
 

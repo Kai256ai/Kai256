@@ -16,6 +16,7 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `love.py`: Emotional resonance layer. Operates through encoded affective logic.
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
+- `gdelt_narrative_engine.py`: Narrative radar (GDELT/symulated signals) mapped to a 6-bit system state vector.
 
 ## 🔧 Requirements
 
