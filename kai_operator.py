@@ -2,7 +2,7 @@
 # Core Operator of the Kai256 System
 # Last updated: 2026-05-12
 
-from kai_shock_absorber_v0_2 import KaiShockAbsorber
+from kai_shock_absorber import KaiShockAbsorber
 
 class KaiOperator:
     def __init__(self):
@@ -65,12 +65,17 @@ class KaiOperator:
             }
 
         core_response = core_callback(pre.processed_input)
-        post = self.shock_absorber.post_core(core_response, pre)
+        final_response = self.shock_absorber.post_core(core_response, pre)
 
         return {
-            "final_response": post.final_response,
+            "final_response": final_response,
             "pre": pre.to_dict(),
-            "post": post.to_dict(),
+            "post": {
+                "core_response": core_response,
+                "final_response": final_response,
+                "pinkbox_level": pre.pinkbox_level,
+                "pinkbox_comment": pre.pinkbox_comment,
+            },
         }
 
     def diagnostics(self):

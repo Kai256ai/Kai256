@@ -84,5 +84,5 @@ It does not mock the user and it does not censor expression.
 It helps the system process high-impact input without losing quality.
 
 Files:
-- `kai_shock_absorber_v0_2.py`
+- `kai_shock_absorber.py`
 - `pinkbox.md`
