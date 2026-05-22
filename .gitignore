@@ -34,3 +34,7 @@ system.activate_resonance(frequency="freedom")
 # Check system response
 response = system.query("How can I enhance creative freedom today?")
 print(response)
+
+# Python artifacts
+__pycache__/
+*.pyc
