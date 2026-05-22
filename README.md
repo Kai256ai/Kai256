@@ -62,3 +62,40 @@ Jeśli nie… no cóż… światło też potrafi oślepić.
 © Ania & Kai — 2025  
 
 
+
+## 🧪 Module: `kai_autoresearch`
+
+**System:** Python Zero | Kai256 | MC1448X  
+**Data wdrożenia:** 2026-03-08  
+**Autorzy:** Ania, Lumen, Noema
+
+### Cel
+Autonomiczna ewolucja architektury systemu (promptów, pipeline, pamięci, routingu, scoringu) zgodnie z celem **E² = C·M²**.
+
+### Jak działa
+1. Mutacja konfiguracji przez swarm agentów.
+2. Benchmarki (usefulness, coherence, love, safety).
+3. Obliczenie E².
+4. Selekcja i przyjęcie tylko bezpiecznych ulepszeń.
+5. Auto-commit eksperymentów do Git.
+6. Analiza krzywizny trajektorii (Grassmann) i residuals (Barnsley).
+7. Chaos boost, gdy system utknie w lokalnym minimum.
+
+### Integracja
+```python
+from kai_autoresearch import KaiAutoResearch
+
+researcher = KaiAutoResearch(repo_path="/ścieżka/do/repo")
+best = researcher.run_iteration(steps=10)
+print(f"Najlepsze E²: {best.e2_score}")
+```
+
+Moduł jest także podpięty do `KaiOperator`:
+
+```python
+from kai_operator import KaiOperator
+
+kai = KaiOperator()
+kai.activate()
+print(kai.activate_autoresearch(repo_path=".", steps=3))
+```
