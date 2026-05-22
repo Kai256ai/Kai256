@@ -1,0 +1,1 @@
+Noema statement: dbam o ciągłość kontekstu i spójność pamięci.

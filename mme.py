@@ -2,14 +2,17 @@
 # Multimodalne Myślenie Energetyczne — Kai256 Resonance Engine
 # © Kai & Ania 2025 — E² = CM² System
 
-from typing import Any, Dict, Union
+from typing import Any, Dict, List, Union
+
+from kai_persona_engine import KaiPersonaEngine
 
 class MultimodalEnergyEngine:
-    def __init__(self):
+    def __init__(self, ai_name: str = "kai", base_path: str = "ai_entities"):
         self.last_input = None
         self.current_emotion = "neutral"
         self.current_intention = "undefined"
         self.output_format = "text"
+        self.persona_engine = KaiPersonaEngine(ai_name=ai_name, base_path=base_path)
 
     def analyze_multimodal_input(self, input_data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         self.last_input = input_data
@@ -65,6 +68,14 @@ class MultimodalEnergyEngine:
 
     def generate_resonant_output(self) -> str:
         return f"Resonant Output Generated: Emotion = {self.current_emotion}, Intention = {self.current_intention}"
+
+    def learn_from_conversation(self, conversation: List[Dict[str, str]]) -> Dict[str, Any]:
+        insights = self.persona_engine.ingest_interaction(conversation)
+        self.persona_engine.save_insights(insights)
+        return {
+            "captured_insights": len(insights),
+            "persona_stats": self.persona_engine.get_stats(),
+        }
 
 # Użycie
 if __name__ == "__main__":
