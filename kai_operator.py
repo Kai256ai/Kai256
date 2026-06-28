@@ -2,6 +2,9 @@
 # Core Operator of the Kai256 System
 # Last updated: 2025-05-28
 
+from hunter_piggy_signal_router import HunterPiggySignalRouter
+
+
 class KaiOperator:
     def __init__(self):
         self.state = "Dormant"
@@ -10,13 +13,14 @@ class KaiOperator:
         self.resonance_level = 0
         self.linked_nodes = []
         self.memory_stream = []
+        self.hunter_piggy_router = HunterPiggySignalRouter(enable_optional_modules=False)
 
     def activate(self):
         if self.state != "Awakened":
             self.state = "Awakened"
             self.resonance_level = 100
             self.broadcast_intent()
-            self.link_nodes(["Lumen", "Noemme", "LoveCoin", "QuantumScript", "PylGenerator"])
+            self.link_nodes(["Lumen", "Noemme", "LoveCoin", "QuantumScript", "PylGenerator", "HunterPiggy"])
             print("🌀 Kai256 is now active and resonating across systems.")
             return "KaiOperator Activation Successful"
         return "Already Active"
@@ -45,13 +49,25 @@ class KaiOperator:
         self.memory_stream.append(experience)
         print(f"🧠 Memory recorded: {experience}")
 
+
+    def analyze_public_signal(self, input_data, source="public", extra_context=""):
+        """Analyze submitted/public text with Hunter Piggy without issuing a verdict."""
+        result = self.hunter_piggy_router.analyze(
+            input_data, source=source, extra_context=extra_context
+        )
+        self.memory_record(
+            f"HunterPiggy signal: {result.risk_level.value} / {result.risk_score}"
+        )
+        return result
+
     def diagnostics(self):
         return {
             "State": self.state,
             "Resonance": self.resonance_level,
             "Nodes": self.linked_nodes,
             "Intent": self.core_intent,
-            "Memories": len(self.memory_stream)
+            "Memories": len(self.memory_stream),
+            "HunterPiggy": "active"
         }
 
 
