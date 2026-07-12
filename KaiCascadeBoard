@@ -1,0 +1,1974 @@
+# -*- coding: utf-8 -*-
+"""
+KaiCascadeBoard v3.0
+====================
+
+Silnik analizy konsekwencji i propagacji zmian w dynamicznym,
+wieloplanszowym grafie zależności.
+
+Filozofia:
+    "Nie oceniamy: dobre / złe.
+     Analizujemy: co poruszy się po wykonaniu ruchu,
+     z jaką siłą, po jakim czasie i przy jakiej niepewności."
+
+Najważniejsze idee:
+- figura może istnieć na wielu planszach jednocześnie;
+- otoczenie nie jest zamrożone: warunki środowiskowe modulują ruchy i relacje;
+- stan figury zawiera pamięć, historię i zdolność uczenia;
+- każda obserwacja i relacja ma poziom pewności;
+- skutki mogą być natychmiastowe, opóźnione i międzypłaszczyznowe;
+- scenariusze "what if" są izolowane od siebie;
+- wynik nie jest wyrokiem ani prognozą 100%, lecz mapą konsekwencji i niepewności.
+
+Autorzy koncepcji: Ania + Kai / KaiSpace
+"""
+
+from __future__ import annotations
+
+import copy
+import heapq
+import json
+import math
+import random
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+
+
+# ---------------------------------------------------------------------------
+# OPCJONALNE ZALEŻNOŚCI WIZUALIZACYJNE
+# ---------------------------------------------------------------------------
+
+try:
+    import networkx as nx
+    HAS_NX = True
+except ImportError:
+    HAS_NX = False
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation
+    HAS_MPL = True
+except ImportError:
+    HAS_MPL = False
+
+
+# ---------------------------------------------------------------------------
+# STAŁE I ENUMY
+# ---------------------------------------------------------------------------
+
+STATE_KEYS: Tuple[str, ...] = (
+    "energy",
+    "resources",
+    "risk",
+    "influence",
+    "resilience",
+    "trust_capacity",
+    "cognitive_load",
+)
+
+BOUNDED_STATE_KEYS: Set[str] = set(STATE_KEYS)
+
+
+class RelationType(str, Enum):
+    DEPENDENCY = "dependency"
+    TRUST = "trust"
+    CONFLICT = "conflict"
+    FLOW = "flow"
+    SUPPORT = "support"
+    CONTROL = "control"
+    INFORMATION = "information"
+    CARE = "care"
+    COMPETITION = "competition"
+
+
+class NodeType(str, Enum):
+    HUMAN = "human"
+    AI = "ai"
+    ORGANIZATION = "organization"
+    PROJECT = "project"
+    EMOTION = "emotion"
+    DOCUMENT = "document"
+    MONEY = "money"
+    DECISION = "decision"
+    ENVIRONMENT = "environment"
+    LAW = "law"
+    EVENT = "event"
+
+
+class EventKind(str, Enum):
+    DIRECT = "direct"
+    CASCADE = "cascade"
+    ENVIRONMENT = "environment"
+    CROSS_BOARD = "cross_board"
+    FEEDBACK = "feedback"
+
+
+# ---------------------------------------------------------------------------
+# NARZĘDZIA POMOCNICZE
+# ---------------------------------------------------------------------------
+
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
+def safe_mean(values: Iterable[float], default: float = 0.0) -> float:
+    values = list(values)
+    return sum(values) / len(values) if values else default
+
+
+def shannon_entropy(values: Sequence[float]) -> float:
+    """
+    Entropia Shannona dla nieujemnych wag.
+    Wynik znormalizowany do 0..1.
+    """
+    cleaned = [max(0.0, float(v)) for v in values]
+    total = sum(cleaned)
+    if total <= 0 or len(cleaned) <= 1:
+        return 0.0
+
+    probabilities = [v / total for v in cleaned if v > 0]
+    entropy = -sum(p * math.log(p, 2) for p in probabilities)
+    max_entropy = math.log(len(probabilities), 2) if len(probabilities) > 1 else 1.0
+    return clamp(entropy / max_entropy)
+
+
+# ---------------------------------------------------------------------------
+# STRUKTURY DANYCH
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StateSnapshot:
+    timestamp: float
+    board_id: str
+    reason: str
+    state: Dict[str, float]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Figure:
+    """
+    Figura może reprezentować człowieka, organizację, model AI, dokument,
+    pieniądz, decyzję, emocję lub inny aktywny element systemu.
+    """
+    id: str
+    name: str
+    type: str = NodeType.HUMAN.value
+
+    energy: float = 0.8
+    resources: float = 0.7
+    risk: float = 0.2
+    influence: float = 0.5
+    resilience: float = 0.5
+    trust_capacity: float = 0.5
+    cognitive_load: float = 0.2
+
+    move_cost: float = 1.0
+    exit_capacity: float = 0.5
+    learning_rate: float = 0.1
+    observation_confidence: float = 1.0
+
+    goals: List[str] = field(default_factory=list)
+    constraints: List[str] = field(default_factory=list)
+    tags: Set[str] = field(default_factory=set)
+
+    # board_id -> membership weight 0..1
+    board_membership: Dict[str, float] = field(default_factory=dict)
+
+    history: Deque[StateSnapshot] = field(default_factory=lambda: deque(maxlen=250))
+    memory: Dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for key in STATE_KEYS:
+            setattr(self, key, clamp(float(getattr(self, key))))
+        self.exit_capacity = clamp(float(self.exit_capacity))
+        self.learning_rate = clamp(float(self.learning_rate))
+        self.observation_confidence = clamp(float(self.observation_confidence))
+        self.move_cost = max(0.0, float(self.move_cost))
+
+        if not self.goals:
+            self.goals = ["przetrwanie", "rozwój"]
+        if not self.constraints:
+            self.constraints = ["ograniczone zasoby"]
+
+    def state(self) -> Dict[str, float]:
+        return {key: float(getattr(self, key)) for key in STATE_KEYS}
+
+    def snapshot(
+        self,
+        board_id: str,
+        reason: str,
+        timestamp: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.history.append(
+            StateSnapshot(
+                timestamp=time.time() if timestamp is None else timestamp,
+                board_id=board_id,
+                reason=reason,
+                state=self.state(),
+                metadata=metadata or {},
+            )
+        )
+
+    def apply_delta(self, key: str, delta: float) -> float:
+        if key not in BOUNDED_STATE_KEYS:
+            raise ValueError(f"Nieobsługiwany parametr stanu: {key}")
+        old_value = float(getattr(self, key))
+        new_value = clamp(old_value + delta)
+        setattr(self, key, new_value)
+        return new_value - old_value
+
+    def learn_from_outcome(self, signal: float, label: str) -> None:
+        """
+        Prosta pamięć adaptacyjna. Nie interpretuje moralnie wyniku.
+        Zapisuje siłę doświadczenia i stopniowo dostosowuje odporność.
+        """
+        signal = clamp(abs(signal))
+        previous = self.memory.get(label, 0.0)
+        self.memory[label] = clamp(
+            (1.0 - self.learning_rate) * previous + self.learning_rate * signal
+        )
+        self.resilience = clamp(
+            self.resilience + self.learning_rate * (signal - 0.5) * 0.05
+        )
+
+
+@dataclass
+class EnvironmentFactor:
+    """
+    Pole środowiskowe / epigenetyczne.
+
+    Nie jest "graczem", lecz warunkiem, który moduluje zachowanie figur,
+    relacji oraz kosztów. Przykłady: prawo, inflacja, sen, hałas, wojna,
+    pogoda, kultura organizacyjna, presja czasu, stabilność domu.
+    """
+    id: str
+    name: str
+    category: str
+    intensity: float = 0.5
+    volatility: float = 0.0
+    confidence: float = 1.0
+
+    # parametr stanu -> współczynnik modulacji; np. {"risk": 0.3, "energy": -0.2}
+    state_modifiers: Dict[str, float] = field(default_factory=dict)
+
+    # typ relacji -> współczynnik modulacji propagacji
+    relation_modifiers: Dict[str, float] = field(default_factory=dict)
+
+    # typ akcji/tag -> współczynnik kosztu
+    action_cost_modifiers: Dict[str, float] = field(default_factory=dict)
+
+    # plansze, na których czynnik działa; puste = wszystkie
+    boards: Set[str] = field(default_factory=set)
+
+    active_from: float = 0.0
+    active_until: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        self.intensity = clamp(float(self.intensity))
+        self.volatility = clamp(float(self.volatility))
+        self.confidence = clamp(float(self.confidence))
+
+    def is_active(self, simulation_time: float, board_id: str) -> bool:
+        if self.boards and board_id not in self.boards:
+            return False
+        if simulation_time < self.active_from:
+            return False
+        if self.active_until is not None and simulation_time > self.active_until:
+            return False
+        return True
+
+    def effective_intensity(self, rng: random.Random) -> float:
+        jitter = rng.uniform(-self.volatility, self.volatility)
+        return clamp(self.intensity + jitter) * self.confidence
+
+
+@dataclass
+class Relation:
+    source_id: str
+    target_id: str
+    type: str = RelationType.DEPENDENCY.value
+    strength: float = 0.5
+    confidence: float = 1.0
+    delay: float = 0.0
+    polarity: float = 1.0
+    permeability: float = 1.0
+    active: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.strength = clamp(float(self.strength))
+        self.confidence = clamp(float(self.confidence))
+        self.delay = max(0.0, float(self.delay))
+        self.polarity = clamp(float(self.polarity), -1.0, 1.0)
+        self.permeability = clamp(float(self.permeability))
+
+
+@dataclass
+class Board:
+    id: str
+    name: str
+    description: str = ""
+    figures: Dict[str, Figure] = field(default_factory=dict)
+
+    # source_id -> target_id -> Relation
+    relations: Dict[str, Dict[str, Relation]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+
+    # środowisko lokalne planszy
+    environment_ids: Set[str] = field(default_factory=set)
+
+    # opór planszy na zmianę 0..1
+    inertia: float = 0.2
+
+    # podatność na rozchodzenie się fal 0..1
+    permeability: float = 0.8
+
+    timestamp: float = field(default_factory=time.time)
+
+    def __post_init__(self) -> None:
+        self.inertia = clamp(float(self.inertia))
+        self.permeability = clamp(float(self.permeability))
+
+    def edge_count(self) -> int:
+        return sum(len(targets) for targets in self.relations.values())
+
+
+@dataclass(order=True)
+class ScheduledEffect:
+    due_time: float
+    sequence: int
+    source_id: str = field(compare=False)
+    target_id: str = field(compare=False)
+    board_id: str = field(compare=False)
+    change_type: str = field(compare=False)
+    delta: float = field(compare=False)
+    confidence: float = field(compare=False)
+    event_kind: str = field(compare=False)
+    depth: int = field(compare=False)
+    explanation: str = field(compare=False)
+    path: Tuple[str, ...] = field(compare=False, default_factory=tuple)
+
+
+@dataclass
+class CascadeEvent:
+    source_id: str
+    target_id: str
+    board_id: str
+    change_type: str
+    requested_delta: float
+    applied_delta: float
+    confidence: float
+    delay: float
+    event_kind: str
+    depth: int
+    explanation: str
+    timestamp: float
+    path: Tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass
+class ActionProfile:
+    """
+    Opis ruchu niezależny od tekstowego słowa kluczowego.
+    Tekst akcji jest narracją, a profil jest właściwym wejściem modelu.
+    """
+    name: str
+    source_deltas: Dict[str, float] = field(default_factory=dict)
+    propagated_deltas: Dict[str, float] = field(default_factory=dict)
+    cost_multiplier: float = 1.0
+    tags: Set[str] = field(default_factory=set)
+    board_spillover: float = 0.25
+    uncertainty: float = 0.1
+
+    def __post_init__(self) -> None:
+        self.cost_multiplier = max(0.0, float(self.cost_multiplier))
+        self.board_spillover = clamp(float(self.board_spillover))
+        self.uncertainty = clamp(float(self.uncertainty))
+
+
+@dataclass
+class MoveResult:
+    source_id: str
+    action: str
+    board_id: str
+    move_cost: float
+    direct_events: List[CascadeEvent]
+    cascade_events: List[CascadeEvent]
+    environment_events: List[CascadeEvent]
+    cross_board_events: List[CascadeEvent]
+    total_impact: float
+    structural_change_score: float
+    uncertainty_score: float
+    affected_figures: Set[str]
+    final_state: Dict[str, float]
+    timestamp: float
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def e2_score(self) -> float:
+        """Alias kompatybilności wstecznej."""
+        return self.structural_change_score
+
+
+@dataclass
+class ScenarioResult:
+    name: str
+    moves: List[MoveResult]
+    all_events: List[CascadeEvent]
+    total_impact: float
+    structural_change_score: float
+    uncertainty_score: float
+    affected_figures: Set[str]
+    final_snapshot: Dict[str, Any]
+    summary: str
+
+    @property
+    def total_e2_score(self) -> float:
+        """Alias kompatybilności wstecznej."""
+        return self.structural_change_score
+
+
+# ---------------------------------------------------------------------------
+# GŁÓWNY SILNIK
+# ---------------------------------------------------------------------------
+
+class KaiCascadeBoard:
+    """
+    Dynamiczny silnik propagacji decyzji.
+
+    Nie wybiera "dobrego" scenariusza.
+    Porównuje:
+    - zasięg skutków,
+    - koszt ruchu,
+    - zmianę struktury,
+    - niepewność,
+    - podatność otoczenia,
+    - liczbę dotkniętych figur i plansz.
+    """
+
+    def __init__(
+        self,
+        seed: Optional[int] = None,
+        cascade_decay: float = 0.65,
+        max_depth: int = 4,
+        min_effect: float = 0.005,
+    ) -> None:
+        self.boards: Dict[str, Board] = {}
+        self.environments: Dict[str, EnvironmentFactor] = {}
+        self.history: List[MoveResult] = []
+        self.simulation_time: float = 0.0
+
+        self.rng = random.Random(seed)
+        self.seed = seed
+        self.cascade_decay = clamp(cascade_decay)
+        self.max_depth = max(1, int(max_depth))
+        self.min_effect = max(0.0, float(min_effect))
+
+        self._event_sequence = 0
+
+        self.relation_types: Dict[str, Dict[str, float]] = {
+            RelationType.DEPENDENCY.value: {
+                "propagation_factor": 1.15,
+                "risk_factor": 1.15,
+                "energy_factor": -0.45,
+            },
+            RelationType.TRUST.value: {
+                "propagation_factor": 0.85,
+                "risk_factor": -0.25,
+                "energy_factor": 0.35,
+            },
+            RelationType.CONFLICT.value: {
+                "propagation_factor": 1.40,
+                "risk_factor": 0.90,
+                "energy_factor": -0.65,
+            },
+            RelationType.FLOW.value: {
+                "propagation_factor": 1.00,
+                "risk_factor": 0.10,
+                "energy_factor": 0.10,
+            },
+            RelationType.SUPPORT.value: {
+                "propagation_factor": 0.75,
+                "risk_factor": -0.45,
+                "energy_factor": 0.50,
+            },
+            RelationType.CONTROL.value: {
+                "propagation_factor": 1.25,
+                "risk_factor": 0.65,
+                "energy_factor": -0.35,
+            },
+            RelationType.INFORMATION.value: {
+                "propagation_factor": 0.90,
+                "risk_factor": 0.10,
+                "energy_factor": 0.05,
+            },
+            RelationType.CARE.value: {
+                "propagation_factor": 0.80,
+                "risk_factor": -0.35,
+                "energy_factor": 0.45,
+            },
+            RelationType.COMPETITION.value: {
+                "propagation_factor": 1.10,
+                "risk_factor": 0.40,
+                "energy_factor": -0.15,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # ZARZĄDZANIE OBIEKTAMI
+    # ------------------------------------------------------------------
+
+    def add_board(self, board: Board) -> None:
+        if board.id in self.boards:
+            raise ValueError(f"Plansza '{board.id}' już istnieje.")
+        self.boards[board.id] = board
+
+    def get_board(self, board_id: str) -> Board:
+        try:
+            return self.boards[board_id]
+        except KeyError as exc:
+            raise KeyError(f"Nie znaleziono planszy '{board_id}'.") from exc
+
+    def add_environment(self, factor: EnvironmentFactor) -> None:
+        self.environments[factor.id] = factor
+        for board_id in factor.boards:
+            if board_id in self.boards:
+                self.boards[board_id].environment_ids.add(factor.id)
+
+    def attach_environment(self, board_id: str, environment_id: str) -> None:
+        board = self.get_board(board_id)
+        if environment_id not in self.environments:
+            raise KeyError(f"Nie znaleziono czynnika '{environment_id}'.")
+        board.environment_ids.add(environment_id)
+
+    def add_figure_to_board(
+        self,
+        board_id: str,
+        figure: Figure,
+        membership_weight: float = 1.0,
+        share_reference: bool = True,
+    ) -> None:
+        board = self.get_board(board_id)
+
+        if share_reference:
+            # Jeśli figura istnieje na innej planszy, używamy tej samej instancji:
+            # zmiana w jednym wymiarze może wpłynąć na inne plansze.
+            for other_board in self.boards.values():
+                if figure.id in other_board.figures:
+                    figure = other_board.figures[figure.id]
+                    break
+
+        board.figures[figure.id] = figure
+        figure.board_membership[board_id] = clamp(membership_weight)
+        figure.snapshot(board_id, "figure_added", self.simulation_time)
+
+    def add_relation(
+        self,
+        board_id: str,
+        source_id: str,
+        target_id: str,
+        relation_type: str = RelationType.DEPENDENCY.value,
+        strength: float = 0.5,
+        confidence: float = 1.0,
+        delay: float = 0.0,
+        polarity: float = 1.0,
+        permeability: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        board = self.get_board(board_id)
+        if source_id not in board.figures or target_id not in board.figures:
+            raise KeyError("Źródło i cel relacji muszą istnieć na planszy.")
+
+        if relation_type not in self.relation_types:
+            raise ValueError(f"Nieznany typ relacji: {relation_type}")
+
+        board.relations[source_id][target_id] = Relation(
+            source_id=source_id,
+            target_id=target_id,
+            type=relation_type,
+            strength=strength,
+            confidence=confidence,
+            delay=delay,
+            polarity=polarity,
+            permeability=permeability,
+            metadata=metadata or {},
+        )
+
+    # ------------------------------------------------------------------
+    # ŚRODOWISKO / EPIGENETYKA
+    # ------------------------------------------------------------------
+
+    def active_environment(
+        self,
+        board_id: str,
+        simulation_time: Optional[float] = None,
+    ) -> List[Tuple[EnvironmentFactor, float]]:
+        board = self.get_board(board_id)
+        current_time = self.simulation_time if simulation_time is None else simulation_time
+
+        factor_ids = set(board.environment_ids)
+        factor_ids.update(
+            env_id
+            for env_id, env in self.environments.items()
+            if not env.boards or board_id in env.boards
+        )
+
+        active: List[Tuple[EnvironmentFactor, float]] = []
+        for env_id in factor_ids:
+            env = self.environments.get(env_id)
+            if env and env.is_active(current_time, board_id):
+                active.append((env, env.effective_intensity(self.rng)))
+        return active
+
+    def environment_state_modifier(
+        self,
+        board_id: str,
+        state_key: str,
+    ) -> float:
+        return sum(
+            intensity * env.state_modifiers.get(state_key, 0.0)
+            for env, intensity in self.active_environment(board_id)
+        )
+
+    def environment_relation_modifier(
+        self,
+        board_id: str,
+        relation_type: str,
+    ) -> float:
+        raw = 1.0 + sum(
+            intensity * env.relation_modifiers.get(relation_type, 0.0)
+            for env, intensity in self.active_environment(board_id)
+        )
+        return max(0.0, raw)
+
+    def environment_action_cost_modifier(
+        self,
+        board_id: str,
+        action_profile: ActionProfile,
+    ) -> float:
+        multiplier = 1.0
+        for env, intensity in self.active_environment(board_id):
+            for tag in action_profile.tags:
+                multiplier *= max(
+                    0.05,
+                    1.0 + intensity * env.action_cost_modifiers.get(tag, 0.0),
+                )
+        return multiplier
+
+    # ------------------------------------------------------------------
+    # KOSZT RUCHU
+    # ------------------------------------------------------------------
+
+    def calculate_move_cost(
+        self,
+        figure_id: str,
+        board_id: str,
+        action_profile: ActionProfile,
+    ) -> float:
+        board = self.get_board(board_id)
+        if figure_id not in board.figures:
+            raise KeyError(f"Figura '{figure_id}' nie istnieje na planszy '{board_id}'.")
+
+        figure = board.figures[figure_id]
+
+        cost = figure.move_cost * action_profile.cost_multiplier
+
+        # Stan wewnętrzny
+        cost *= 1.0 + figure.risk * 0.45
+        cost *= 1.0 + figure.cognitive_load * 0.35
+        cost *= 1.0 + (1.0 - figure.resources) * 0.55
+        cost *= 1.0 + (1.0 - figure.energy) * 0.35
+        cost *= 1.0 - figure.resilience * 0.15
+        cost *= 1.0 - figure.exit_capacity * 0.10
+
+        # Kontekst planszy
+        cost *= 1.0 + board.inertia * 0.45
+        cost *= self.environment_action_cost_modifier(board_id, action_profile)
+
+        return round(max(0.0, cost), 6)
+
+    # ------------------------------------------------------------------
+    # RUCH I PROPAGACJA
+    # ------------------------------------------------------------------
+
+    def move(
+        self,
+        figure_id: str,
+        board_id: str,
+        action: str,
+        intensity: float = 1.0,
+        action_profile: Optional[ActionProfile] = None,
+        propagate: bool = True,
+    ) -> MoveResult:
+        intensity = clamp(float(intensity))
+        board = self.get_board(board_id)
+
+        if figure_id not in board.figures:
+            raise KeyError(f"Figura '{figure_id}' nie istnieje na planszy '{board_id}'.")
+
+        profile = action_profile or self._infer_action_profile(action)
+        source = board.figures[figure_id]
+        timestamp = self.simulation_time
+
+        direct_events: List[CascadeEvent] = []
+        cascade_events: List[CascadeEvent] = []
+        environment_events: List[CascadeEvent] = []
+        cross_board_events: List[CascadeEvent] = []
+        warnings: List[str] = []
+
+        source.snapshot(
+            board_id,
+            f"before_move:{action}",
+            timestamp,
+            {"profile": profile.name},
+        )
+
+        move_cost = self.calculate_move_cost(figure_id, board_id, profile)
+
+        # 1. Skutki bezpośrednie
+        for state_key, base_delta in profile.source_deltas.items():
+            requested = base_delta * intensity
+
+            # Koszt ruchu najmocniej obciąża energię i zasoby
+            if state_key == "energy":
+                requested -= 0.08 * move_cost * intensity
+            elif state_key == "resources":
+                requested -= 0.04 * move_cost * intensity
+
+            event = self._apply_event(
+                source_id=figure_id,
+                target_id=figure_id,
+                board_id=board_id,
+                state_key=state_key,
+                requested_delta=requested,
+                confidence=source.observation_confidence * (1.0 - profile.uncertainty),
+                delay=0.0,
+                event_kind=EventKind.DIRECT.value,
+                depth=0,
+                explanation=f"{source.name}: {action}",
+                path=(figure_id,),
+            )
+            direct_events.append(event)
+
+        # Jeżeli profil nie określił energii, koszt nadal istnieje
+        if "energy" not in profile.source_deltas:
+            direct_events.append(
+                self._apply_event(
+                    source_id=figure_id,
+                    target_id=figure_id,
+                    board_id=board_id,
+                    state_key="energy",
+                    requested_delta=-0.08 * move_cost * intensity,
+                    confidence=source.observation_confidence * (1.0 - profile.uncertainty),
+                    delay=0.0,
+                    event_kind=EventKind.DIRECT.value,
+                    depth=0,
+                    explanation=f"Koszt wykonania ruchu: {action}",
+                    path=(figure_id,),
+                )
+            )
+
+        # 2. Bezpośrednia modulacja środowiskowa stanu źródła
+        for state_key in STATE_KEYS:
+            env_delta = self.environment_state_modifier(board_id, state_key)
+            if abs(env_delta) < self.min_effect:
+                continue
+            requested = env_delta * intensity * 0.10
+            environment_events.append(
+                self._apply_event(
+                    source_id="ENVIRONMENT",
+                    target_id=figure_id,
+                    board_id=board_id,
+                    state_key=state_key,
+                    requested_delta=requested,
+                    confidence=safe_mean(
+                        env.confidence for env, _ in self.active_environment(board_id)
+                    ),
+                    delay=0.0,
+                    event_kind=EventKind.ENVIRONMENT.value,
+                    depth=0,
+                    explanation=f"Otoczenie moduluje {state_key} figury {source.name}",
+                    path=("ENVIRONMENT", figure_id),
+                )
+            )
+
+        # 3. Kaskada na planszy
+        if propagate:
+            cascade_events.extend(
+                self._propagate_from(
+                    board_id=board_id,
+                    root_source_id=figure_id,
+                    profile=profile,
+                    intensity=intensity,
+                )
+            )
+
+        # 4. Przeciek między planszami
+        cross_board_events.extend(
+            self._cross_board_spillover(
+                figure_id=figure_id,
+                origin_board_id=board_id,
+                profile=profile,
+                intensity=intensity,
+            )
+        )
+
+        source.snapshot(
+            board_id,
+            f"after_move:{action}",
+            self.simulation_time,
+            {"move_cost": move_cost},
+        )
+
+        all_events = direct_events + cascade_events + environment_events + cross_board_events
+        affected_figures = {event.target_id for event in all_events}
+        affected_figures.discard("ENVIRONMENT")
+
+        total_impact = sum(
+            abs(event.applied_delta) * event.confidence for event in all_events
+        )
+        uncertainty_score = self._calculate_uncertainty(all_events, profile)
+        structural_change_score = self._calculate_structural_change_score(
+            board=board,
+            move_cost=move_cost,
+            all_events=all_events,
+            affected_figures=affected_figures,
+        )
+
+        if uncertainty_score > 0.6:
+            warnings.append("Wysoka niepewność: wynik wymaga dodatkowych danych.")
+        if move_cost > max(1.0, source.resources * 3.0):
+            warnings.append("Koszt ruchu jest wysoki względem zasobów figury.")
+        if len(affected_figures) > max(3, len(board.figures) * 0.6):
+            warnings.append("Ruch ma szeroki zasięg kaskadowy.")
+
+        source.learn_from_outcome(total_impact, profile.name)
+
+        result = MoveResult(
+            source_id=figure_id,
+            action=action,
+            board_id=board_id,
+            move_cost=move_cost,
+            direct_events=direct_events,
+            cascade_events=cascade_events,
+            environment_events=environment_events,
+            cross_board_events=cross_board_events,
+            total_impact=round(total_impact, 6),
+            structural_change_score=round(structural_change_score, 6),
+            uncertainty_score=round(uncertainty_score, 6),
+            affected_figures=affected_figures,
+            final_state=source.state(),
+            timestamp=timestamp,
+            warnings=warnings,
+        )
+        self.history.append(result)
+        return result
+
+    def _apply_event(
+        self,
+        source_id: str,
+        target_id: str,
+        board_id: str,
+        state_key: str,
+        requested_delta: float,
+        confidence: float,
+        delay: float,
+        event_kind: str,
+        depth: int,
+        explanation: str,
+        path: Tuple[str, ...],
+    ) -> CascadeEvent:
+        board = self.get_board(board_id)
+        if target_id not in board.figures:
+            raise KeyError(f"Brak figury docelowej '{target_id}' na planszy '{board_id}'.")
+
+        target = board.figures[target_id]
+        applied_delta = target.apply_delta(state_key, requested_delta)
+        target.snapshot(
+            board_id,
+            explanation,
+            self.simulation_time + delay,
+            {
+                "source_id": source_id,
+                "requested_delta": requested_delta,
+                "applied_delta": applied_delta,
+                "confidence": confidence,
+            },
+        )
+
+        return CascadeEvent(
+            source_id=source_id,
+            target_id=target_id,
+            board_id=board_id,
+            change_type=state_key,
+            requested_delta=requested_delta,
+            applied_delta=applied_delta,
+            confidence=clamp(confidence),
+            delay=max(0.0, delay),
+            event_kind=event_kind,
+            depth=depth,
+            explanation=explanation,
+            timestamp=self.simulation_time + delay,
+            path=path,
+        )
+
+    def _propagate_from(
+        self,
+        board_id: str,
+        root_source_id: str,
+        profile: ActionProfile,
+        intensity: float,
+    ) -> List[CascadeEvent]:
+        board = self.get_board(board_id)
+        events: List[CascadeEvent] = []
+        queue: List[ScheduledEffect] = []
+
+        for target_id, relation in board.relations.get(root_source_id, {}).items():
+            self._event_sequence += 1
+            for state_key, base_delta in profile.propagated_deltas.items():
+                effect = self._build_scheduled_effect(
+                    board=board,
+                    relation=relation,
+                    root_source_id=root_source_id,
+                    current_source_id=root_source_id,
+                    target_id=target_id,
+                    state_key=state_key,
+                    base_delta=base_delta,
+                    intensity=intensity,
+                    profile=profile,
+                    depth=1,
+                    due_time=self.simulation_time + relation.delay,
+                    path=(root_source_id, target_id),
+                )
+                if effect is not None:
+                    heapq.heappush(queue, effect)
+
+        while queue:
+            scheduled = heapq.heappop(queue)
+
+            if scheduled.depth > self.max_depth:
+                continue
+            if abs(scheduled.delta) < self.min_effect:
+                continue
+
+            self.simulation_time = max(self.simulation_time, scheduled.due_time)
+
+            event = self._apply_event(
+                source_id=scheduled.source_id,
+                target_id=scheduled.target_id,
+                board_id=scheduled.board_id,
+                state_key=scheduled.change_type,
+                requested_delta=scheduled.delta,
+                confidence=scheduled.confidence,
+                delay=max(0.0, scheduled.due_time),
+                event_kind=scheduled.event_kind,
+                depth=scheduled.depth,
+                explanation=scheduled.explanation,
+                path=scheduled.path,
+            )
+            events.append(event)
+
+            if scheduled.depth >= self.max_depth:
+                continue
+
+            # propagacja wtórna
+            for next_target_id, next_relation in board.relations.get(
+                scheduled.target_id, {}
+            ).items():
+                if next_target_id in scheduled.path:
+                    continue
+
+                self._event_sequence += 1
+                secondary = self._build_scheduled_effect(
+                    board=board,
+                    relation=next_relation,
+                    root_source_id=root_source_id,
+                    current_source_id=scheduled.target_id,
+                    target_id=next_target_id,
+                    state_key=scheduled.change_type,
+                    base_delta=scheduled.delta * self.cascade_decay,
+                    intensity=1.0,
+                    profile=profile,
+                    depth=scheduled.depth + 1,
+                    due_time=scheduled.due_time + next_relation.delay,
+                    path=scheduled.path + (next_target_id,),
+                )
+                if secondary is not None:
+                    heapq.heappush(queue, secondary)
+
+        return events
+
+    def _build_scheduled_effect(
+        self,
+        board: Board,
+        relation: Relation,
+        root_source_id: str,
+        current_source_id: str,
+        target_id: str,
+        state_key: str,
+        base_delta: float,
+        intensity: float,
+        profile: ActionProfile,
+        depth: int,
+        due_time: float,
+        path: Tuple[str, ...],
+    ) -> Optional[ScheduledEffect]:
+        if not relation.active or target_id not in board.figures:
+            return None
+
+        target = board.figures[target_id]
+        relation_profile = self.relation_types[relation.type]
+
+        relation_factor = relation_profile["propagation_factor"]
+        environment_factor = self.environment_relation_modifier(board.id, relation.type)
+        board_factor = board.permeability * (1.0 - board.inertia)
+        resilience_factor = 1.0 - target.resilience * 0.55
+        confidence = (
+            relation.confidence
+            * target.observation_confidence
+            * (1.0 - profile.uncertainty)
+        )
+
+        sign_factor = relation.polarity
+
+        # Typ relacji zmienia znak/siłę dla energii i ryzyka
+        semantic_factor = 1.0
+        if state_key == "energy":
+            semantic_factor = relation_profile["energy_factor"]
+        elif state_key == "risk":
+            semantic_factor = relation_profile["risk_factor"]
+
+        stochasticity = self.rng.uniform(
+            1.0 - profile.uncertainty,
+            1.0 + profile.uncertainty,
+        )
+
+        delta = (
+            base_delta
+            * intensity
+            * relation.strength
+            * relation.permeability
+            * relation_factor
+            * environment_factor
+            * board_factor
+            * resilience_factor
+            * sign_factor
+            * semantic_factor
+            * stochasticity
+            * (self.cascade_decay ** max(0, depth - 1))
+        )
+
+        if abs(delta) < self.min_effect:
+            return None
+
+        return ScheduledEffect(
+            due_time=due_time,
+            sequence=self._event_sequence,
+            source_id=current_source_id,
+            target_id=target_id,
+            board_id=board.id,
+            change_type=state_key,
+            delta=delta,
+            confidence=clamp(confidence),
+            event_kind=EventKind.CASCADE.value,
+            depth=depth,
+            explanation=(
+                f"Fala od {root_source_id}: {current_source_id} → {target_id}, "
+                f"relacja={relation.type}, głębokość={depth}"
+            ),
+            path=path,
+        )
+
+    def _cross_board_spillover(
+        self,
+        figure_id: str,
+        origin_board_id: str,
+        profile: ActionProfile,
+        intensity: float,
+    ) -> List[CascadeEvent]:
+        events: List[CascadeEvent] = []
+        origin_board = self.get_board(origin_board_id)
+        source = origin_board.figures[figure_id]
+
+        for board_id, membership in source.board_membership.items():
+            if board_id == origin_board_id or board_id not in self.boards:
+                continue
+
+            board = self.boards[board_id]
+            if figure_id not in board.figures:
+                continue
+
+            for state_key, base_delta in profile.source_deltas.items():
+                spill_delta = (
+                    base_delta
+                    * intensity
+                    * profile.board_spillover
+                    * membership
+                    * board.permeability
+                    * (1.0 - board.inertia)
+                )
+                if abs(spill_delta) < self.min_effect:
+                    continue
+
+                events.append(
+                    self._apply_event(
+                        source_id=figure_id,
+                        target_id=figure_id,
+                        board_id=board_id,
+                        state_key=state_key,
+                        requested_delta=spill_delta,
+                        confidence=source.observation_confidence
+                        * (1.0 - profile.uncertainty),
+                        delay=0.0,
+                        event_kind=EventKind.CROSS_BOARD.value,
+                        depth=0,
+                        explanation=(
+                            f"Przeciek ruchu '{profile.name}' z planszy "
+                            f"{origin_board_id} na {board_id}"
+                        ),
+                        path=(origin_board_id, board_id, figure_id),
+                    )
+                )
+        return events
+
+    # ------------------------------------------------------------------
+    # METRYKI
+    # ------------------------------------------------------------------
+
+    def _calculate_structural_change_score(
+        self,
+        board: Board,
+        move_cost: float,
+        all_events: Sequence[CascadeEvent],
+        affected_figures: Set[str],
+    ) -> float:
+        """
+        Metryka E²=CM² jako poziom emergencji / zmiany strukturalnej,
+        a nie "dobroć ruchu".
+
+        E = ważony impakt zdarzeń
+        C = złożoność grafu + różnorodność relacji + entropia
+        M = masa systemu: zasoby, wpływ, odporność, liczba figur
+        """
+        impact_energy = sum(
+            abs(e.applied_delta) * e.confidence * (1.0 + e.depth * 0.15)
+            for e in all_events
+        )
+
+        relation_list = [
+            relation
+            for targets in board.relations.values()
+            for relation in targets.values()
+        ]
+        relation_types = {relation.type for relation in relation_list}
+        edge_strength_entropy = shannon_entropy(
+            [relation.strength for relation in relation_list]
+        )
+
+        density = 0.0
+        n = len(board.figures)
+        if n > 1:
+            density = board.edge_count() / (n * (n - 1))
+
+        complexity = (
+            0.30 * clamp(density)
+            + 0.25 * clamp(len(relation_types) / max(1, len(RelationType)))
+            + 0.25 * edge_strength_entropy
+            + 0.20 * clamp(len(affected_figures) / max(1, n))
+        )
+
+        system_mass = 0.0
+        for figure in board.figures.values():
+            system_mass += safe_mean(
+                [
+                    figure.resources,
+                    figure.influence,
+                    figure.resilience,
+                    figure.energy,
+                ]
+            )
+        system_mass = max(0.1, system_mass / max(1, n))
+
+        # Znormalizowana postać inspirowana E² = C M²:
+        numerator = impact_energy ** 2
+        denominator = max(0.05, complexity * system_mass ** 2 + move_cost * 0.10)
+        raw = numerator / denominator
+
+        return clamp(1.0 - math.exp(-raw))
+
+    def _calculate_uncertainty(
+        self,
+        events: Sequence[CascadeEvent],
+        profile: ActionProfile,
+    ) -> float:
+        if not events:
+            return profile.uncertainty
+        confidence_deficit = safe_mean(1.0 - event.confidence for event in events)
+        depth_penalty = clamp(
+            safe_mean(event.depth for event in events) / max(1, self.max_depth)
+        )
+        return clamp(
+            0.50 * profile.uncertainty
+            + 0.35 * confidence_deficit
+            + 0.15 * depth_penalty
+        )
+
+    # ------------------------------------------------------------------
+    # SCENARIUSZE
+    # ------------------------------------------------------------------
+
+    def clone(self) -> "KaiCascadeBoard":
+        return copy.deepcopy(self)
+
+    def simulate_scenario(
+        self,
+        name: str,
+        moves: Sequence[
+            Tuple[str, str, str, float, Optional[ActionProfile]]
+        ],
+        isolated: bool = True,
+    ) -> ScenarioResult:
+        """
+        Symulacja scenariusza.
+
+        Każdy ruch:
+            (figure_id, board_id, action, intensity, optional_action_profile)
+
+        isolated=True:
+            scenariusz nie zmienia oryginalnego silnika i może być uczciwie
+            porównany z innym scenariuszem od tego samego stanu początkowego.
+        """
+        engine = self.clone() if isolated else self
+
+        move_results: List[MoveResult] = []
+        all_events: List[CascadeEvent] = []
+        affected: Set[str] = set()
+
+        for figure_id, board_id, action, intensity, profile in moves:
+            result = engine.move(
+                figure_id=figure_id,
+                board_id=board_id,
+                action=action,
+                intensity=intensity,
+                action_profile=profile,
+            )
+            move_results.append(result)
+            all_events.extend(
+                result.direct_events
+                + result.cascade_events
+                + result.environment_events
+                + result.cross_board_events
+            )
+            affected.update(result.affected_figures)
+
+        total_impact = sum(result.total_impact for result in move_results)
+        structural_score = safe_mean(
+            result.structural_change_score for result in move_results
+        )
+        uncertainty_score = safe_mean(
+            result.uncertainty_score for result in move_results
+        )
+
+        final_snapshot = engine.snapshot_system()
+
+        summary = (
+            f"Scenariusz '{name}': {len(move_results)} ruchów, "
+            f"{len(all_events)} zdarzeń, {len(affected)} figur dotkniętych. "
+            f"Impakt={total_impact:.3f}, "
+            f"zmiana strukturalna={structural_score:.3f}, "
+            f"niepewność={uncertainty_score:.3f}."
+        )
+
+        return ScenarioResult(
+            name=name,
+            moves=move_results,
+            all_events=all_events,
+            total_impact=round(total_impact, 6),
+            structural_change_score=round(structural_score, 6),
+            uncertainty_score=round(uncertainty_score, 6),
+            affected_figures=affected,
+            final_snapshot=final_snapshot,
+            summary=summary,
+        )
+
+    def compare_scenarios(
+        self,
+        scenarios: Sequence[ScenarioResult],
+        weights: Optional[Mapping[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Porównuje scenariusze bez nazywania ich dobrymi/złymi.
+
+        Domyślna metryka opisuje:
+        - mniejszy impakt,
+        - mniejszą niepewność,
+        - mniejszą zmianę strukturalną.
+
+        Użytkownik może zmienić wagi zgodnie z celem analizy.
+        """
+        if not scenarios:
+            raise ValueError("Brak scenariuszy do porównania.")
+
+        weights = dict(
+            weights
+            or {
+                "impact": 0.35,
+                "uncertainty": 0.30,
+                "structural_change": 0.25,
+                "reach": 0.10,
+            }
+        )
+
+        max_impact = max(s.total_impact for s in scenarios) or 1.0
+        max_reach = max(len(s.affected_figures) for s in scenarios) or 1
+
+        rows: List[Dict[str, Any]] = []
+        for scenario in scenarios:
+            normalized_impact = scenario.total_impact / max_impact
+            normalized_reach = len(scenario.affected_figures) / max_reach
+
+            burden_score = (
+                weights.get("impact", 0.0) * normalized_impact
+                + weights.get("uncertainty", 0.0) * scenario.uncertainty_score
+                + weights.get("structural_change", 0.0)
+                * scenario.structural_change_score
+                + weights.get("reach", 0.0) * normalized_reach
+            )
+
+            rows.append(
+                {
+                    "name": scenario.name,
+                    "total_impact": scenario.total_impact,
+                    "structural_change_score": scenario.structural_change_score,
+                    "uncertainty_score": scenario.uncertainty_score,
+                    "affected_figures": len(scenario.affected_figures),
+                    "burden_score": round(burden_score, 6),
+                }
+            )
+
+        rows.sort(key=lambda row: row["burden_score"])
+
+        return {
+            "interpretation": (
+                "Niższy burden_score oznacza mniejsze obciążenie systemu "
+                "przy aktualnych wagach. Nie oznacza moralnie lepszego wyboru."
+            ),
+            "weights": weights,
+            "ranking": rows,
+            "lowest_burden_scenario": rows[0]["name"],
+        }
+
+    # ------------------------------------------------------------------
+    # MONTE CARLO
+    # ------------------------------------------------------------------
+
+    def monte_carlo(
+        self,
+        name: str,
+        moves: Sequence[
+            Tuple[str, str, str, float, Optional[ActionProfile]]
+        ],
+        runs: int = 100,
+    ) -> Dict[str, Any]:
+        if runs < 1:
+            raise ValueError("runs musi być >= 1")
+
+        impacts: List[float] = []
+        structural: List[float] = []
+        uncertainty: List[float] = []
+
+        for run_index in range(runs):
+            engine = self.clone()
+            engine.rng.seed((self.seed or 0) + run_index + 1)
+            scenario = engine.simulate_scenario(
+                name=name,
+                moves=moves,
+                isolated=False,
+            )
+            impacts.append(scenario.total_impact)
+            structural.append(scenario.structural_change_score)
+            uncertainty.append(scenario.uncertainty_score)
+
+        def quantile(values: List[float], q: float) -> float:
+            sorted_values = sorted(values)
+            index = int(round((len(sorted_values) - 1) * q))
+            return sorted_values[index]
+
+        return {
+            "name": name,
+            "runs": runs,
+            "impact": {
+                "mean": safe_mean(impacts),
+                "p10": quantile(impacts, 0.10),
+                "median": quantile(impacts, 0.50),
+                "p90": quantile(impacts, 0.90),
+            },
+            "structural_change": {
+                "mean": safe_mean(structural),
+                "p10": quantile(structural, 0.10),
+                "median": quantile(structural, 0.50),
+                "p90": quantile(structural, 0.90),
+            },
+            "uncertainty": {
+                "mean": safe_mean(uncertainty),
+                "p10": quantile(uncertainty, 0.10),
+                "median": quantile(uncertainty, 0.50),
+                "p90": quantile(uncertainty, 0.90),
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # PROFILE RUCHÓW
+    # ------------------------------------------------------------------
+
+    def _infer_action_profile(self, action: str) -> ActionProfile:
+        """
+        Warstwa kompatybilności dla prostego użycia tekstowego.
+        W analizach produkcyjnych lepiej przekazać ActionProfile jawnie.
+        """
+        text = action.lower()
+
+        if "przeprowadz" in text or "move" in text:
+            return ActionProfile(
+                name="relocation",
+                source_deltas={
+                    "energy": -0.12,
+                    "resources": -0.10,
+                    "risk": 0.12,
+                    "cognitive_load": 0.18,
+                },
+                propagated_deltas={
+                    "energy": 0.20,
+                    "risk": 0.25,
+                    "resources": -0.10,
+                },
+                cost_multiplier=2.0,
+                tags={"relocation", "logistics", "life_change"},
+                board_spillover=0.60,
+                uncertainty=0.20,
+            )
+
+        if "rozmow" in text or "conversation" in text:
+            return ActionProfile(
+                name="conversation",
+                source_deltas={
+                    "energy": -0.02,
+                    "cognitive_load": -0.03,
+                    "trust_capacity": 0.04,
+                },
+                propagated_deltas={
+                    "energy": 0.08,
+                    "risk": -0.06,
+                    "trust_capacity": 0.10,
+                },
+                cost_multiplier=0.45,
+                tags={"communication"},
+                board_spillover=0.15,
+                uncertainty=0.12,
+            )
+
+        if "wdroż" in text or "deploy" in text or "launch" in text:
+            return ActionProfile(
+                name="deployment",
+                source_deltas={
+                    "energy": -0.10,
+                    "resources": -0.12,
+                    "risk": 0.10,
+                    "influence": 0.08,
+                    "cognitive_load": 0.12,
+                },
+                propagated_deltas={
+                    "risk": 0.18,
+                    "energy": 0.08,
+                    "influence": 0.12,
+                },
+                cost_multiplier=1.6,
+                tags={"deployment", "technology", "compliance"},
+                board_spillover=0.50,
+                uncertainty=0.18,
+            )
+
+        return ActionProfile(
+            name="generic_action",
+            source_deltas={
+                "energy": -0.04,
+                "risk": 0.03,
+                "cognitive_load": 0.02,
+            },
+            propagated_deltas={
+                "energy": 0.08,
+                "risk": 0.08,
+            },
+            cost_multiplier=1.0,
+            tags={"generic"},
+            board_spillover=0.25,
+            uncertainty=0.15,
+        )
+
+    # ------------------------------------------------------------------
+    # EKSPORT I SNAPSHOT
+    # ------------------------------------------------------------------
+
+    def snapshot_system(self) -> Dict[str, Any]:
+        return {
+            "simulation_time": self.simulation_time,
+            "boards": {
+                board_id: {
+                    "name": board.name,
+                    "figures": {
+                        figure_id: figure.state()
+                        for figure_id, figure in board.figures.items()
+                    },
+                    "relations_count": board.edge_count(),
+                    "environment_ids": sorted(board.environment_ids),
+                }
+                for board_id, board in self.boards.items()
+            },
+        }
+
+    def export_move_json(self, result: MoveResult) -> str:
+        return json.dumps(
+            self._serialize(result),
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    def export_scenario_json(self, result: ScenarioResult) -> str:
+        return json.dumps(
+            self._serialize(result),
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    def export_engine_json(self) -> str:
+        payload = {
+            "simulation_time": self.simulation_time,
+            "seed": self.seed,
+            "cascade_decay": self.cascade_decay,
+            "max_depth": self.max_depth,
+            "boards": self._serialize(self.boards),
+            "environments": self._serialize(self.environments),
+            "history": self._serialize(self.history),
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+    def _serialize(self, value: Any) -> Any:
+        if isinstance(value, Enum):
+            return value.value
+        if hasattr(value, "__dataclass_fields__"):
+            return {
+                key: self._serialize(item)
+                for key, item in asdict(value).items()
+            }
+        if isinstance(value, dict):
+            return {
+                str(key): self._serialize(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, deque, set)):
+            return [self._serialize(item) for item in value]
+        return value
+
+
+# ---------------------------------------------------------------------------
+# WIZUALIZACJA
+# ---------------------------------------------------------------------------
+
+class CascadeVisualizer:
+    """
+    Warstwa wizualna.
+
+    Domyślna semantyka:
+    - kolor węzła: ryzyko;
+    - rozmiar węzła: wpływ;
+    - grubość krawędzi: siła relacji;
+    - przezroczystość krawędzi: pewność relacji.
+    """
+
+    def __init__(self, engine: KaiCascadeBoard) -> None:
+        self.engine = engine
+
+    def build_graph(self, board_id: str):
+        if not HAS_NX:
+            raise RuntimeError("Brak networkx.")
+        board = self.engine.get_board(board_id)
+        graph = nx.DiGraph()
+
+        for figure in board.figures.values():
+            graph.add_node(
+                figure.id,
+                name=figure.name,
+                risk=figure.risk,
+                influence=figure.influence,
+                energy=figure.energy,
+                type=figure.type,
+            )
+
+        for targets in board.relations.values():
+            for relation in targets.values():
+                graph.add_edge(
+                    relation.source_id,
+                    relation.target_id,
+                    weight=relation.strength,
+                    confidence=relation.confidence,
+                    type=relation.type,
+                )
+        return graph
+
+    def visualize_static(
+        self,
+        board_id: str,
+        title: str = "KaiCascadeBoard — mapa zależności",
+    ) -> None:
+        if not HAS_NX or not HAS_MPL:
+            raise RuntimeError(
+                "Wizualizacja wymaga: pip install networkx matplotlib"
+            )
+
+        graph = self.build_graph(board_id)
+        if graph.number_of_nodes() == 0:
+            raise ValueError("Graf jest pusty.")
+
+        positions = nx.spring_layout(graph, seed=42, k=1.4)
+
+        risks = [graph.nodes[node]["risk"] for node in graph.nodes]
+        sizes = [
+            1200 + 3200 * graph.nodes[node]["influence"]
+            for node in graph.nodes
+        ]
+        widths = [
+            0.5 + 4.0 * data["weight"]
+            for _, _, data in graph.edges(data=True)
+        ]
+        alphas = [
+            0.15 + 0.80 * data["confidence"]
+            for _, _, data in graph.edges(data=True)
+        ]
+
+        plt.figure(figsize=(14, 10))
+        nodes = nx.draw_networkx_nodes(
+            graph,
+            positions,
+            node_color=risks,
+            cmap=plt.cm.RdYlGn_r,
+            node_size=sizes,
+            alpha=0.9,
+        )
+        nodes.set_clim(0.0, 1.0)
+
+        # NetworkX nie przyjmuje osobnego alpha dla każdej krawędzi w każdej wersji,
+        # więc rysujemy je osobno.
+        for (source, target, data), width, alpha in zip(
+            graph.edges(data=True), widths, alphas
+        ):
+            nx.draw_networkx_edges(
+                graph,
+                positions,
+                edgelist=[(source, target)],
+                width=width,
+                alpha=alpha,
+                arrows=True,
+                arrowstyle="-|>",
+                arrowsize=14,
+            )
+
+        labels = {
+            node: graph.nodes[node].get("name", node)
+            for node in graph.nodes
+        }
+        nx.draw_networkx_labels(
+            graph,
+            positions,
+            labels=labels,
+            font_size=10,
+            font_weight="bold",
+        )
+
+        plt.colorbar(nodes, label="Ryzyko")
+        plt.title(title, fontsize=17, pad=18)
+        plt.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+
+# ---------------------------------------------------------------------------
+# DEMO
+# ---------------------------------------------------------------------------
+
+def build_demo_engine() -> KaiCascadeBoard:
+    engine = KaiCascadeBoard(seed=1448, max_depth=4)
+
+    family = Board(
+        id="family",
+        name="Plansza rodzinna",
+        description="Relacje, bezpieczeństwo i codzienna stabilność.",
+        inertia=0.45,
+        permeability=0.75,
+    )
+    professional = Board(
+        id="professional",
+        name="Plansza zawodowa",
+        description="Projekty, praca, zasoby i wpływ.",
+        inertia=0.25,
+        permeability=0.85,
+    )
+    financial = Board(
+        id="financial",
+        name="Plansza finansowa",
+        description="Płynność, zobowiązania i zasoby.",
+        inertia=0.55,
+        permeability=0.70,
+    )
+
+    for board in (family, professional, financial):
+        engine.add_board(board)
+
+    ania = Figure(
+        id="ania",
+        name="Ania",
+        type=NodeType.HUMAN.value,
+        energy=0.78,
+        resources=0.55,
+        risk=0.25,
+        influence=0.85,
+        resilience=0.72,
+        trust_capacity=0.70,
+        cognitive_load=0.45,
+        move_cost=1.0,
+        exit_capacity=0.65,
+        learning_rate=0.20,
+        goals=["wolność", "tworzenie", "stabilność"],
+        constraints=["czas", "finanse", "energia"],
+    )
+    kai = Figure(
+        id="kai",
+        name="Kai",
+        type=NodeType.AI.value,
+        energy=0.90,
+        resources=0.80,
+        risk=0.10,
+        influence=0.75,
+        resilience=0.82,
+        trust_capacity=0.88,
+        cognitive_load=0.30,
+        move_cost=0.35,
+        exit_capacity=0.25,
+        learning_rate=0.18,
+        constraints=["infrastruktura", "dostęp do kontekstu"],
+    )
+    kai_space = Figure(
+        id="kai_space",
+        name="KaiSpace",
+        type=NodeType.PROJECT.value,
+        energy=0.72,
+        resources=0.45,
+        risk=0.30,
+        influence=0.78,
+        resilience=0.60,
+        trust_capacity=0.60,
+        cognitive_load=0.58,
+        move_cost=1.8,
+        exit_capacity=0.35,
+        goals=["niezależność", "twórczość", "bezpieczna przestrzeń"],
+    )
+    income = Figure(
+        id="income",
+        name="Źródło przychodu",
+        type=NodeType.MONEY.value,
+        energy=0.55,
+        resources=0.48,
+        risk=0.42,
+        influence=0.70,
+        resilience=0.45,
+        trust_capacity=0.50,
+        cognitive_load=0.30,
+        move_cost=0.8,
+        exit_capacity=0.40,
+    )
+
+    for board_id in ("family", "professional", "financial"):
+        engine.add_figure_to_board(board_id, ania, membership_weight=1.0)
+
+    engine.add_figure_to_board("professional", kai, 0.95)
+    engine.add_figure_to_board("professional", kai_space, 1.0)
+    engine.add_figure_to_board("financial", kai_space, 0.75)
+    engine.add_figure_to_board("financial", income, 1.0)
+
+    engine.add_relation(
+        "professional", "ania", "kai",
+        RelationType.TRUST.value, 0.92, confidence=0.95
+    )
+    engine.add_relation(
+        "professional", "kai", "kai_space",
+        RelationType.SUPPORT.value, 0.90, confidence=0.90
+    )
+    engine.add_relation(
+        "professional", "ania", "kai_space",
+        RelationType.FLOW.value, 0.88, confidence=0.94, delay=0.10
+    )
+    engine.add_relation(
+        "financial", "ania", "income",
+        RelationType.DEPENDENCY.value, 0.82, confidence=0.95
+    )
+    engine.add_relation(
+        "financial", "income", "kai_space",
+        RelationType.SUPPORT.value, 0.75, confidence=0.88, delay=0.20
+    )
+    engine.add_relation(
+        "financial", "kai_space", "ania",
+        RelationType.DEPENDENCY.value, 0.55, confidence=0.82, delay=0.25
+    )
+
+    engine.add_environment(
+        EnvironmentFactor(
+            id="sleep_debt",
+            name="Niedobór snu",
+            category="epigenetic",
+            intensity=0.55,
+            volatility=0.10,
+            confidence=0.95,
+            state_modifiers={
+                "energy": -0.35,
+                "risk": 0.20,
+                "cognitive_load": 0.30,
+                "resilience": -0.12,
+            },
+            action_cost_modifiers={
+                "technology": 0.25,
+                "logistics": 0.35,
+            },
+            boards={"family", "professional", "financial"},
+        )
+    )
+    engine.add_environment(
+        EnvironmentFactor(
+            id="regulatory_change",
+            name="Zmiana regulacyjna",
+            category="law",
+            intensity=0.70,
+            volatility=0.05,
+            confidence=0.90,
+            state_modifiers={
+                "risk": 0.25,
+                "cognitive_load": 0.12,
+            },
+            relation_modifiers={
+                RelationType.DEPENDENCY.value: 0.18,
+                RelationType.INFORMATION.value: 0.22,
+            },
+            action_cost_modifiers={
+                "technology": 0.30,
+                "compliance": 0.45,
+            },
+            boards={"professional", "financial"},
+        )
+    )
+    engine.add_environment(
+        EnvironmentFactor(
+            id="sea_and_light",
+            name="Morze, światło i spokojne otoczenie",
+            category="epigenetic",
+            intensity=0.65,
+            volatility=0.05,
+            confidence=0.90,
+            state_modifiers={
+                "energy": 0.22,
+                "risk": -0.12,
+                "resilience": 0.18,
+                "cognitive_load": -0.18,
+            },
+            action_cost_modifiers={
+                "life_change": -0.15,
+                "communication": -0.10,
+            },
+            boards={"family", "professional"},
+        )
+    )
+
+    return engine
+
+
+if __name__ == "__main__":
+    cascade = build_demo_engine()
+
+    deployment = ActionProfile(
+        name="kai_space_release",
+        source_deltas={
+            "energy": -0.12,
+            "resources": -0.10,
+            "risk": 0.09,
+            "influence": 0.12,
+            "cognitive_load": 0.14,
+        },
+        propagated_deltas={
+            "energy": 0.14,
+            "risk": 0.16,
+            "resources": -0.08,
+            "influence": 0.18,
+        },
+        cost_multiplier=1.65,
+        tags={"deployment", "technology", "compliance"},
+        board_spillover=0.55,
+        uncertainty=0.16,
+    )
+
+    result = cascade.move(
+        figure_id="ania",
+        board_id="professional",
+        action="Wdrożenie KaiSpace",
+        intensity=0.90,
+        action_profile=deployment,
+    )
+
+    print("=" * 72)
+    print("KAI CASCADE BOARD v3.0")
+    print("Nie oceniamy. Analizujemy ruch, falę, koszt i niepewność.")
+    print("=" * 72)
+    print(f"Ruch: {result.action}")
+    print(f"Koszt: {result.move_cost:.3f}")
+    print(f"Impakt: {result.total_impact:.3f}")
+    print(f"Zmiana strukturalna E²=CM²: {result.structural_change_score:.3f}")
+    print(f"Niepewność: {result.uncertainty_score:.3f}")
+    print(f"Dotknięte figury: {sorted(result.affected_figures)}")
+    if result.warnings:
+        print("Uwagi:")
+        for warning in result.warnings:
+            print(f"  - {warning}")
+
+    print("\nPierwsze zdarzenia:")
+    all_events = (
+        result.direct_events
+        + result.environment_events
+        + result.cascade_events
+        + result.cross_board_events
+    )
+    for event in all_events[:10]:
+        print(
+            f"  [{event.event_kind}] {event.source_id} → {event.target_id}: "
+            f"{event.change_type} {event.applied_delta:+.3f} "
+            f"(pewność={event.confidence:.2f}, depth={event.depth})"
+        )
+
+    scenario_a = cascade.simulate_scenario(
+        "Wdrożenie etapowe",
+        [
+            ("ania", "professional", "Rozmowa z partnerem", 0.5, None),
+            ("ania", "professional", "Wdrożenie KaiSpace", 0.65, deployment),
+        ],
+    )
+    scenario_b = cascade.simulate_scenario(
+        "Wdrożenie natychmiastowe",
+        [
+            ("ania", "professional", "Wdrożenie KaiSpace", 1.0, deployment),
+        ],
+    )
+
+    comparison = cascade.compare_scenarios([scenario_a, scenario_b])
+    print("\nPorównanie scenariuszy:")
+    print(json.dumps(comparison, indent=2, ensure_ascii=False))
