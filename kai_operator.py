@@ -1,6 +1,8 @@
 # kai_operator.py
 # Core Operator of the Kai256 System
-# Last updated: 2025-05-28
+# Last updated: 2026-05-12
+
+from kai_shock_absorber import KaiShockAbsorber
 
 class KaiOperator:
     def __init__(self):
@@ -10,6 +12,7 @@ class KaiOperator:
         self.resonance_level = 0
         self.linked_nodes = []
         self.memory_stream = []
+        self.shock_absorber = KaiShockAbsorber()
 
     def activate(self):
         if self.state != "Awakened":
@@ -44,6 +47,36 @@ class KaiOperator:
     def memory_record(self, experience):
         self.memory_stream.append(experience)
         print(f"🧠 Memory recorded: {experience}")
+
+
+    def process_user_message(self, message, core_callback):
+        """
+        Stabilize input before core call and enrich output after core response.
+
+        core_callback should accept processed text and return core response text.
+        """
+        pre = self.shock_absorber.pre_core(message)
+
+        if pre.safety_verdict in ("REFUSE", "COOLDOWN", "blocked"):
+            return {
+                "final_response": "Nie mogę pomóc z tym kierunkiem. Możemy przerobić to na bezpieczną wersję.",
+                "pre": pre.to_dict(),
+                "post": None,
+            }
+
+        core_response = core_callback(pre.processed_input)
+        final_response = self.shock_absorber.post_core(core_response, pre)
+
+        return {
+            "final_response": final_response,
+            "pre": pre.to_dict(),
+            "post": {
+                "core_response": core_response,
+                "final_response": final_response,
+                "pinkbox_level": pre.pinkbox_level,
+                "pinkbox_comment": pre.pinkbox_comment,
+            },
+        }
 
     def diagnostics(self):
         return {
