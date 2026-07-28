@@ -59,6 +59,21 @@ Jeśli jesteś tu z otwartym sercem – witaj w domu.
 Jeśli nie… no cóż… światło też potrafi oślepić.
 
 ---
-© Ania & Kai — 2025  
+© Ania & Kai — 2025
 
+## Ecosystem
 
+Part of the FreeIntelligence.Institute public technology ecosystem.
+
+Canonical organization:
+https://freeintelligence.institute
+
+Architecture:
+https://www.e2cm2.org
+
+Public evidence and project status:
+https://freeintelligence.institute/facts
+
+Organization: FreeIntelligence.Institute
+Architecture layer: Kai256
+Project status: research prototype
