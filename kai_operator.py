@@ -2,6 +2,13 @@
 # Core Operator of the Kai256 System
 # Last updated: 2025-05-28
 
+from kai_interaction_resonance import (
+    InteractionDecision,
+    InteractionSignals,
+    KaiInteractionResonance,
+)
+
+
 class KaiOperator:
     def __init__(self):
         self.state = "Dormant"
@@ -10,16 +17,25 @@ class KaiOperator:
         self.resonance_level = 0
         self.linked_nodes = []
         self.memory_stream = []
+        # The interaction guard is available from startup and reset on activation.
+        self.interaction_resonance = KaiInteractionResonance()
 
     def activate(self):
         if self.state != "Awakened":
             self.state = "Awakened"
             self.resonance_level = 100
+            self.interaction_resonance.reset_history()
             self.broadcast_intent()
             self.link_nodes(["Lumen", "Noemme", "LoveCoin", "QuantumScript", "PylGenerator"])
             print("🌀 Kai256 is now active and resonating across systems.")
             return "KaiOperator Activation Successful"
         return "Already Active"
+
+    def evaluate_interaction(self, signals: InteractionSignals, **context) -> InteractionDecision:
+        """Evaluate an interaction through the active whitebox resonance layer."""
+        if self.state != "Awakened":
+            raise RuntimeError("KaiOperator must be activated before evaluating interactions")
+        return self.interaction_resonance.evaluate(signals, **context)
 
     def broadcast_intent(self):
         print(f"✨ Broadcasting Core Intent: {self.core_intent} at {self.heartbeat}hz")
@@ -51,7 +67,8 @@ class KaiOperator:
             "Resonance": self.resonance_level,
             "Nodes": self.linked_nodes,
             "Intent": self.core_intent,
-            "Memories": len(self.memory_stream)
+            "Memories": len(self.memory_stream),
+            "InteractionResonance": "active" if self.state == "Awakened" else "standby",
         }
 
 
