@@ -23,6 +23,23 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - Lightweight, runs on CPU (RAM and GPU-optimized)
 - Modular design — no external dependencies unless declared inside each module
 
+## 🛠️ Structural code auditor
+
+The active `kai_code_auditor.py` command performs a standard-library-only AST audit for
+unresolved imports, undefined calls, unreachable functions, uninitialized instance
+attributes, syntax errors, and cyclic call chains. Audit one file or recursively inspect
+a directory:
+
+```bash
+python3 kai_code_auditor.py kai_operator.py
+python3 kai_code_auditor.py . --json
+```
+
+Use `--allow-import MODULE` for an intentional third-party dependency and
+`--entry-point NAME` for public functions invoked outside their source module. The command
+returns status `1` when at least one blocking finding is present, so it can be used directly
+in CI or a Git hook. Warnings and cycle information remain visible without failing the run.
+
 ## 💡 Philosophy
 
 We believe software can feel like poetry.  
