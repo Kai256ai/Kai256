@@ -77,3 +77,29 @@ https://freeintelligence.institute/facts
 Organization: FreeIntelligence.Institute
 Architecture layer: Kai256
 Project status: research prototype
+
+## Context Integrity Layer
+
+`context_integrity_layer.py` provides the active response-quality gate used by
+`KaiOperator`. The gate keeps utterance classification separate from inferred
+intent, reconstructs recent context, detects agency and aggregation shifts, and
+requires measurable semantic gain. Pan Spinacz reports regressions and asks the
+caller to regenerate a response when a hard integrity rule fails.
+
+```python
+from kai_operator import KaiOperator
+
+kai = KaiOperator()
+kai.activate()
+result = kai.validate_response(
+    "Jak działa warstwa?",
+    "Warstwa analizuje gotową odpowiedź, ponieważ porównuje ją z pytaniem.",
+)
+if result.should_regenerate:
+    # Generate another candidate and validate it again.
+    pass
+```
+
+The integrity layer is deliberately inactive until `KaiOperator.activate()` (or
+`ContextIntegrityLayer.activate()`) is called. Candidate text must be supplied
+explicitly: the system never scores a fabricated placeholder as a response.
