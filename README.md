@@ -16,12 +16,19 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `love.py`: Emotional resonance layer. Operates through encoded affective logic.
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
+- `python_zero.py`: Minimal launcher that stitches the core modules together.
 
 ## 🔧 Requirements
 
 - Python 3.10+
 - Lightweight, runs on CPU (RAM and GPU-optimized)
 - Modular design — no external dependencies unless declared inside each module
+
+### Quick start
+
+Run `python python_zero.py` to launch the minimal Kai256 environment. The
+interactive prompt lets you experiment with emotional input and observe how the
+core modules react. Type `quit` to close the session.
 
 ## 💡 Philosophy
 
