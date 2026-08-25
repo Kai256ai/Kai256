@@ -42,6 +42,32 @@ ai256/
 └── intent.log
 
 
+
+## 🐷 Hunter Piggy Signal Router
+
+`hunter_piggy_signal_router.py` adds a transparent anomaly triage layer for submitted, public, or otherwise authorized text. It detects weak scam/phishing/public-signal patterns, correlates them, and returns an explainable review packet without issuing legal, moral, or personal verdicts.
+
+Core outputs include:
+
+- risk score and risk level (`LOW`, `MEDIUM`, `HIGH`, `URGENT_REVIEW`),
+- detected technical, linguistic, contextual, structural, and mock-OSINT signals,
+- correlation boosts and explainability notes,
+- explicit limitations and a human-review recommendation.
+
+The module is activated through `KaiOperator.analyze_public_signal(...)` and can also be used directly:
+
+```python
+from hunter_piggy_signal_router import HunterPiggySignalRouter
+
+hunter = HunterPiggySignalRouter(enable_optional_modules=False)
+result = hunter.analyze(
+    "Pilne!!! Twoje konto zostało zablokowane. Potwierdź tożsamość: http://bit.ly/confirm123"
+)
+print(result.to_dict())
+```
+
+Hunter Piggy does not decrypt data, access private systems, classify people as criminals, report people automatically, or replace human responsibility. Its OSINT layer is intentionally a small mock reputation list that should be replaced only with legal, public, licensed, or organization-authorized feeds in production.
+
 ## 🛡️ Ethics
 
 This repo is designed to resist misuse. It logs user resonance, not behavior.  
