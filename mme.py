@@ -4,15 +4,19 @@
 
 from typing import Any, Dict, Union
 
+from semantic_matrix_decoder import SemanticMatrixDecoder
+
 class MultimodalEnergyEngine:
     def __init__(self):
         self.last_input = None
         self.current_emotion = "neutral"
         self.current_intention = "undefined"
         self.output_format = "text"
+        self.semantic_decoder = SemanticMatrixDecoder(mode="adult")
 
     def analyze_multimodal_input(self, input_data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         self.last_input = input_data
+        semantic_analysis = None
 
         if isinstance(input_data, dict):
             if "text" in input_data:
@@ -26,6 +30,9 @@ class MultimodalEnergyEngine:
         else:
             content = input_data
 
+        if isinstance(content, str):
+            semantic_analysis = self.semantic_decoder.decode_with_layers(content)
+
         emotion = self._detect_emotion(content)
         intention = self._detect_intention(content)
 
@@ -35,7 +42,8 @@ class MultimodalEnergyEngine:
         return {
             "emotion": emotion,
             "intention": intention,
-            "content": content
+            "content": content,
+            "semantic_analysis": semantic_analysis,
         }
 
     def _detect_emotion(self, content: str) -> str:
@@ -64,7 +72,10 @@ class MultimodalEnergyEngine:
         return "Interpreted visual content [placeholder]"
 
     def generate_resonant_output(self) -> str:
-        return f"Resonant Output Generated: Emotion = {self.current_emotion}, Intention = {self.current_intention}"
+        return (
+            "Resonant Output Generated: "
+            f"Emotion = {self.current_emotion}, Intention = {self.current_intention}"
+        )
 
 # Użycie
 if __name__ == "__main__":
