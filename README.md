@@ -16,6 +16,23 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `love.py`: Emotional resonance layer. Operates through encoded affective logic.
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
+- `kai_interaction_resonance.py`: explainable interaction-state assessment,
+  capability gate, mirror feedback, self-correction, and adaptive expression.
+
+## Interaction resonance
+
+The resonance layer is integrated with `KaiOperator` and becomes available after
+operator activation:
+
+```python
+from kai_interaction_resonance import InteractionSignals
+from kai_operator import KaiOperator
+
+kai = KaiOperator()
+kai.activate()
+decision = kai.evaluate_interaction(InteractionSignals(prompt_injection=0.8))
+print(decision.state, decision.trace.reasons)
+```
 
 ## 🔧 Requirements
 
