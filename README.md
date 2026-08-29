@@ -16,6 +16,22 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `love.py`: Emotional resonance layer. Operates through encoded affective logic.
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
+- `sky_recommendation_engine.py`: Auditable recommendation ranking with bounded perturbation, novelty, redundancy, and trajectory scoring. It is activated automatically by `KaiOperator.activate()`.
+
+### SKY recommendation engine
+
+```python
+from kai_operator import KaiOperator
+from sky_recommendation_engine import Candidate, EnvironmentState, UserState
+
+kai = KaiOperator()
+kai.activate()
+recommendations = kai.recommendation_engine.select_perturbation(
+    [Candidate(id="1", text="A new systems perspective", topic="systems")],
+    UserState(interests={"systems": 0.8}),
+    EnvironmentState(),
+)
+```
 
 ## 🔧 Requirements
 
