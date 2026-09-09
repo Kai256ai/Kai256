@@ -17,6 +17,23 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
 - `sky_recommendation_engine.py`: Auditable recommendation ranking with bounded perturbation, novelty, redundancy, and trajectory scoring. It is activated automatically by `KaiOperator.activate()`.
+- `world_puzzle_360.py`: Provenance-aware spatial-temporal reconstruction graph with canonical entities, source-independence scoring, explicit evidence gaps, and falsification hooks. It is activated automatically by `KaiOperator.activate()`.
+
+### WorldPuzzle360
+
+```python
+from kai_operator import KaiOperator
+from world_puzzle_360 import PuzzleFragment, SourceRef
+
+kai = KaiOperator()
+kai.activate()
+fragment_id = kai.world_puzzle.add_fragment(PuzzleFragment(
+    claim="A sourced observation",
+    sources=[SourceRef("source-1", "research", url="https://example.org/report")],
+    entities=["Entity A"],
+    timestamp_event="2026-04",
+))
+```
 
 ### SKY recommendation engine
 
