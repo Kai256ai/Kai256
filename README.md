@@ -17,6 +17,21 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
 - `sky_recommendation_engine.py`: Auditable recommendation ranking with bounded perturbation, novelty, redundancy, and trajectory scoring. It is activated automatically by `KaiOperator.activate()`.
+- `kai_lambda_housekeeper.py`: Representation-fidelity auditing with temporal grounding, provenance-cycle and Tarjan structural protection, severity scoring, transform-first repair, and cascade-safe batch decisions. It is activated automatically by `KaiOperator.activate()`.
+
+### Lambda Housekeeper 360
+
+```python
+from kai_operator import KaiOperator
+from kai_lambda_housekeeper import EpistemicType, GraphState, Node
+
+kai = KaiOperator()
+kai.activate()
+state = GraphState(nodes={
+    "observation": Node("observation", semantic="active", epistemic=EpistemicType.OBSERVED),
+})
+cycle = kai.housekeeper_engine.run(state)
+```
 
 ### SKY recommendation engine
 
