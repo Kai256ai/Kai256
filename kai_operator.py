@@ -3,6 +3,7 @@
 # Last updated: 2026-08-29
 
 from sky_recommendation_engine import SKYRecommendationEngine
+from pigi_core import PIGICore
 
 class KaiOperator:
     def __init__(self):
@@ -13,6 +14,7 @@ class KaiOperator:
         self.linked_nodes = []
         self.memory_stream = []
         self.recommendation_engine = None
+        self.pigi_core = None
 
     def activate(self):
         if self.state != "Awakened":
@@ -21,6 +23,7 @@ class KaiOperator:
             self.broadcast_intent()
             self.link_nodes(["Lumen", "Noemme", "LoveCoin", "QuantumScript", "PylGenerator"])
             self.recommendation_engine = SKYRecommendationEngine()
+            self.pigi_core = PIGICore()
             print("🌀 Kai256 is now active and resonating across systems.")
             return "KaiOperator Activation Successful"
         return "Already Active"
@@ -57,6 +60,7 @@ class KaiOperator:
             "Intent": self.core_intent,
             "Memories": len(self.memory_stream),
             "RecommendationEngine": self.recommendation_engine is not None,
+            "PIGICore": self.pigi_core is not None,
         }
 
 

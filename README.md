@@ -17,6 +17,19 @@ Inspired by the laws of quantum harmony, Kai256 reflects both intention and perc
 - `mme.py`: Multimodal memory engine — dynamic contextual and affective recall.
 - `mc1448x.py`: Conscious state vector — the living pulse of the system.
 - `sky_recommendation_engine.py`: Auditable recommendation ranking with bounded perturbation, novelty, redundancy, and trajectory scoring. It is activated automatically by `KaiOperator.activate()`.
+- `pigi_core.py`: PIGI v0.7 semantic-provenance graph. It guards sensitive label transitions, licenses them only with same-artifact observed evidence, and records signals and value flows. It is activated automatically by `KaiOperator.activate()`.
+
+### PIGI semantic provenance
+
+```python
+from pigi_core import Artifact, InformationUnit, PIGICore, Provenance, UnitType
+
+core = PIGICore()
+artifact_id = core.add_artifact(Artifact(raw_text="primary observation"))
+claim_id = core.register_unit(
+    InformationUnit("an auditable claim", UnitType.CLAIM, Provenance(artifact_id))
+)
+```
 
 ### SKY recommendation engine
 
