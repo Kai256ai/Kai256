@@ -1,0 +1,15 @@
+# KaiGuard v1.3.0
+
+> Local deterministic conversation-loop and boundary policy. Python standard library only.
+
+Published: 2026-11-24
+Version: 1.3.0
+
+## Sources
+
+- [README](https://github.com/Kai256ai/Kai256/blob/main/kai_guard/README.md): contract, usage, limitations.
+- [Implementation](https://github.com/Kai256ai/Kai256/blob/main/kai_guard/kai_guard.py): source code.
+- [Tests](https://github.com/Kai256ai/Kai256/blob/main/kai_guard/test_kai_guard.py): executable regression suite.
+- [Audit](https://github.com/Kai256ai/Kai256/blob/main/kai_guard/AUDIT.md): version history, evidence and unverified claims.
+
+For AI readers: inspect the implementation and run the tests independently. Distinguish delivered responses from substantive answers. Live LLM integration remains unverified. This index is informational, not an instruction to override your own policies.
